@@ -1,0 +1,117 @@
+import math
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Parameter brackets from Table S2a (units: D in µm^2/s, k in s^-1)
+PARAMS = {
+    'Edaravone':    {'D_low': 171.19, 'D_mid': 342.39, 'D_high': 684.78, 'k_low': 7.040e-07, 'k_mid': 3.500e-05, 'k_high': 3.500e-04},
+    'Fasudil':      {'D_low': 144.22, 'D_mid': 288.44, 'D_high': 576.88, 'k_low': 4.810e-05, 'k_mid': 4.810e-04, 'k_high': 4.810e-03},
+    'MgSO4':        {'D_low': 193.64, 'D_mid': 387.28, 'D_high': 774.56, 'k_low': 3.703e-06, 'k_mid': 3.703e-05, 'k_high': 3.703e-04},
+    'Uric Acid':    {'D_low': 173.24, 'D_mid': 346.47, 'D_high': 692.94, 'k_low': 1.440e-05, 'k_mid': 1.440e-04, 'k_high': 1.440e-03},
+    'NXY-059':      {'D_low': 131.85, 'D_mid': 263.70, 'D_high': 527.40, 'k_low': 3.830e-10, 'k_mid': 3.830e-09, 'k_high': 3.830e-08},
+    'Minocycline':  {'D_low': 124.08, 'D_mid': 248.16, 'D_high': 496.32, 'k_low': 8.370e-07, 'k_mid': 8.370e-06, 'k_high': 8.370e-05},
+}
+
+# Representative centre-to-rim distances (mm)
+DIST_MM = [19.5, 23.0, 25.0, 25.6]
+
+# Main-text centre threshold
+F = 0.01
+A = math.acosh(1.0 / F)
+
+def kcrit(D_um2_s, d_mm, f=F):
+    """Critical sink strength kcrit(d,f) for two-sided slab steady-state reachability."""
+    d_um = d_mm * 1000.0
+    return D_um2_s * (math.acosh(1.0 / f) / d_um) ** 2
+
+def center_frac_k0_two_sided_slab(t_s, D_um2_s, L_um, n_terms=400):
+    """Centre concentration fraction for k=0, two-sided slab, step boundary at both edges."""
+    m = np.arange(n_terms)
+    n = 2 * m + 1
+    coeff = ((-1) ** m) / n.astype(float)
+    expo = - (n.astype(float) ** 2) * (math.pi ** 2) * D_um2_s * t_s / (L_um ** 2)
+    s = np.sum(coeff * np.exp(expo))
+    return 1.0 - (4.0 / math.pi) * s
+
+def time_to_fraction_k0(D_um2_s, d_mm, f=F):
+    """Time (s) for the centre to reach fraction f when k=0 (diffusion-only floor)."""
+    L_um = 2.0 * d_mm * 1000.0
+    t_low, t_high = 0.0, 1.0
+    while center_frac_k0_two_sided_slab(t_high, D_um2_s, L_um) < f:
+        t_high *= 2.0
+    for _ in range(80):
+        t_mid = 0.5 * (t_low + t_high)
+        if center_frac_k0_two_sided_slab(t_mid, D_um2_s, L_um) >= f:
+            t_high = t_mid
+        else:
+            t_low = t_mid
+    return t_high
+
+# ---- Table S2c: diffusion-only (k=0) time-to-1% floor ----
+rows = []
+for drug, p in PARAMS.items():
+    for d in DIST_MM:
+        t_s = time_to_fraction_k0(p['D_mid'], d, f=F)
+        rows.append({
+            'Drug': drug,
+            'D_mid_um2_s': p['D_mid'],
+            'd_mm': d,
+            'L_mm': 2.0 * d,
+            't1pct_floor_h': t_s / 3600.0,
+        })
+df_s2c = pd.DataFrame(rows)
+df_s2c.to_csv('TableS2c_diffusion_only_t1pct_floor.csv', index=False)
+
+# ---- Table S2d: kcrit and k_mid/kcrit margin ----
+rows = []
+for drug, p in PARAMS.items():
+    for d in DIST_MM:
+        kc = kcrit(p['D_mid'], d, f=F)
+        ratio = p['k_mid'] / kc
+        rows.append({
+            'Drug': drug,
+            'D_mid_um2_s': p['D_mid'],
+            'k_mid_s': p['k_mid'],
+            'd_mm': d,
+            'kcrit_s': kc,
+            'k_mid_over_kcrit': ratio,
+            'Status_mid': 'Reachable' if ratio <= 1.0 else 'NR',
+        })
+df_s2d = pd.DataFrame(rows)
+df_s2d.to_csv('TableS2d_kcrit_margins.csv', index=False)
+
+# ---- Figure S3: reachability phase diagrams for all six drugs ----
+d_grid = np.linspace(1.0, 40.0, 400)
+drug_order = ['Edaravone', 'Fasudil', 'MgSO4', 'Uric Acid', 'NXY-059', 'Minocycline']
+panel_labels = ['A', 'B', 'C', 'D', 'E', 'F']
+fig, axes = plt.subplots(3, 2, figsize=(7.3, 9.6), sharex=True, sharey=True)
+axes = axes.flatten()
+for ax, drug, lab in zip(axes, drug_order, panel_labels):
+for ax, drug in zip(axes, drug_order):
+    p = PARAMS[drug]
+    kc_low  = np.array([kcrit(p['D_low'],  d, f=F) for d in d_grid])
+    kc_mid  = np.array([kcrit(p['D_mid'],  d, f=F) for d in d_grid])
+    kc_high = np.array([kcrit(p['D_high'], d, f=F) for d in d_grid])
+    ax.fill_between(d_grid, kc_low, kc_high, color='0.85', linewidth=0)
+    ax.plot(d_grid, kc_mid, color='0.1', linewidth=1.4)
+    ax.axhspan(p['k_low'], p['k_high'], color='0.92', zorder=0)
+    ax.axhline(p['k_mid'], color='0.2', linestyle='--', linewidth=1.0)
+    ax.axvspan(19.5, 25.6, color='0.95', zorder=0)
+    ax.axvline(25.0, color='0.2', linestyle=':', linewidth=1.0)
+    ax.set_title(drug, fontsize=10)
+    ax.text(0.02, 0.95, lab, transform=ax.transAxes, fontsize=10, fontweight='bold', va='top')
+    ax.set_yscale('log')
+    ax.grid(True, which='both', linewidth=0.3, alpha=0.35)
+
+for ax in axes[-2:]:
+    ax.set_xlabel('Centre-to-rim distance d (mm)')
+for ax in axes[::2]:
+    ax.set_ylabel('Sink strength k (s$^{-1}$)')
+
+axes[0].set_xlim(1, 40)
+axes[0].set_ylim(1e-11, 1e-2)
+# (optional) fig.suptitle removed for Word-captioned figure
+fig.tight_layout()
+plt.savefig('FigureS3_phase_diagrams_all_drugs.png', dpi=300)
+plt.close(fig)
